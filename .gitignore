@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Secrets (never commit)
+.env
+*.pem
+*.p8
+profiles.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform.lock.hcl.bak
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+
+# Local data & build artifacts
+exploration/samples/
+*.zip
+.DS_Store
