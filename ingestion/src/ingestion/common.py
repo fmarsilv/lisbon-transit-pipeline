@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 # Identifies us politely to the API owners. Replace <your-github-user> with your username.
-USER_AGENT = "lisbon-transit-pipeline/0.1 (portfolio project; github.com/<your-github-user>/lisbon-transit-pipeline)"
+USER_AGENT = "lisbon-transit-pipeline/0.1 (portfolio project; github.com/fmarsilv/lisbon-transit-pipeline)"
 
 
 def fetch_bytes(url: str, timeout: int = 15, attempts: int = 3, backoff_seconds: float = 2.0) -> bytes:
