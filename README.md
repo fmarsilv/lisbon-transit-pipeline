@@ -4,7 +4,7 @@
 
 ## The story so far
 
-As an everyday Carris Metropolitana passenger — and a frequent complainer about how late the buses are — I decided to put my data engineering skills to use and finally answer the question that's been on my mind at every bus stop. With a small twist: does the weather make it worse?
+As an everyday Carris Metropolitana passenger, and a frequent complainer about how late the buses are, I decided to put my data engineering skills to use and finally answer the question that's been on my mind at every bus stop. With a small twist: does the weather make it worse?
 
 With the question in mind, all that was left was to start building. I split the project into six phases, each one taking the data a step closer to an answer.
 
@@ -40,7 +40,7 @@ Every finding and design choice along the way is logged in [`docs/decisions.md`]
 - **The obvious endpoint didn't work.** `/arrivals` looked like exactly what I needed, but every past arrival I sampled had a null `observed_arrival`. So instead of asking the API when buses arrived, I work it out myself: poll every bus's live position each minute, catch the moment it's `STOPPED_AT` a stop, and compare that against the official GTFS timetable.
 - **Timestamps lie (a little).** The docs describe vehicle timestamps as seconds in Lisbon time; they're actually UTC epoch milliseconds.
 - **IDs are messier than documented.** Trip IDs carry bracketed plan prefixes like `[F34NX][YA15B]3512_0_1_...`. The good news: they join exactly to the GTFS feed, as long as I keep them untouched.
-- **Weather has no memory.** IPMA only serves a rolling ~24-hour window with no archive. If I miss an hour, it's gone for good.
+- **Weather has no memory.** IPMA only serves a rolling ~24 hour window with no archive. If I miss an hour, it's gone for good.
 - **Lisbon weather isn't Carris weather.** Carris Metropolitana runs in the municipalities *around* Lisbon, not in the city itself. So each bus stop gets matched to its nearest IPMA station out of the 18 in the metro area, with a flag to exclude unrepresentative ones like the windy capes of Cabo da Roca and Cabo Raso.
 
 ---
@@ -75,7 +75,7 @@ The ingestion code lives in [`ingestion/`](ingestion/). The rule is simple: **la
   raw/carris/vehicles/dt=2026-10-05/hour=17/vehicles_20261005T172800Z.json.gz
   ```
 - The same code runs **locally** (writing to a `local_raw/` folder) or **in AWS** (writing to S3 when `RAW_BUCKET` is set), so I can test the whole job on my laptop without touching the cloud.
-- Unit tests pin down the partition logic, including the classic trap of a Lisbon-time timestamp landing in the wrong UTC day.
+- Unit tests pin down the partition logic, including the classic trap of a Lisbon time timestamp landing in the wrong UTC day.
 
 **Built so far:** the **live vehicles poller**, the heart of the project. Each snapshot holds ~450–500 buses; polling every minute adds up to around 700k rows and ~50 MB of gzipped files a day.
 
@@ -88,7 +88,7 @@ The ingestion code lives in [`ingestion/`](ingestion/). The rule is simple: **la
 | Alerts | Every 30 min | Service disruptions |
 | IPMA weather observations | Hourly, at :30 | No archive, and IPMA publishes with ~1 hour lag |
 | Stops, lines, routes | Daily | Slowly changing dimensions |
-| Service metrics | Daily | Rolling 14-day window |
+| Service metrics | Daily | Rolling 14 day window |
 | Demand by line | Weekly | Returns full history on every call (~48 MB) |
 | GTFS schedule | Landed as a zip | `stop_times.txt` alone is ~787 MB unzipped, too big to unpack inside Lambda |
 
@@ -108,7 +108,7 @@ The ingestion code lives in [`ingestion/`](ingestion/). The rule is simple: **la
 
 **Coming soon.** The plan is already shaped by Phase 1:
 
-- **Arrivals:** turn minute-by-minute `STOPPED_AT` pings into arrival events, and join them to the GTFS timetable on `(trip_id, stop_id)`, watching out for loop routes that visit the same stop twice in one trip.
+- **Arrivals:** turn minute by minute `STOPPED_AT` pings into arrival events, and join them to the GTFS timetable on `(trip_id, stop_id)`, watching out for loop routes that visit the same stop twice in one trip.
 - **Delay:** actual arrival minus scheduled arrival. <!-- Define what counts as "late", e.g. more than X minutes. -->
 - **Weather:** flatten IPMA's nested JSON, translate the Portuguese field names (`temperatura`, `precAcumulada`, …) to English, convert `-99` sentinels to nulls, and deduplicate the ~23 hours of overlap between consecutive polls.
 - **Data quality:** dbt tests on things like timestamps falling within a plausible range.
