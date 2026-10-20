@@ -4,7 +4,6 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "boto3>=1.43.105",
-    "requests>=2.34.2",
 ]
 
 [dependency-groups]
@@ -12,3 +11,7 @@ dev = [
     "pytest>=9.1.1",
     "ruff>=0.16.9",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["ingestion/src"]
+testpaths = ["ingestion/tests"]
