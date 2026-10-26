@@ -28,3 +28,4 @@ exploration/samples/
 *.zip
 .DS_Store
 local_raw/
+infra/build/
