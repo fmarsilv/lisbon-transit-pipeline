@@ -26,7 +26,7 @@ resource "aws_lambda_function" "vehicles" {
   handler       = "ingestion.carris_vehicles.handler" # module path + function name
   architectures = ["arm64"]                           # Graviton: cheaper per ms than x86
 
-  memory_size = 128 # MB; the smallest size, plenty for one HTTP call and a gzip
+  memory_size = 256 # MB; the smallest size, plenty for one HTTP call and a gzip
   timeout     = 60  # seconds; worst case is 3 attempts x 15s timeout + 6s of backoff
 
   environment {
