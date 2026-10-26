@@ -17,3 +17,14 @@ variable "project" {
   type        = string
   default     = "lisbon-transit"
 }
+
+variable "alert_email" {
+  description = "Email address that receives budget alerts. Set in terraform.tfvars, which is gitignored."
+  type        = string
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost limit for the budget alarm, in USD."
+  type        = string
+  default     = "5"
+}
