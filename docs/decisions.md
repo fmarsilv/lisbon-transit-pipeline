@@ -52,3 +52,35 @@ A running log of findings and choices made while building this pipeline.
 - **Finding:** Carris Metropolitana operates in the municipalities around Lisbon, not inside Lisbon city, so "Lisboa" stations alone are unrepresentative. A bounding box over the metropolitan area returns 18 IPMA stations (Setúbal, Almada, Barreiro, Amadora, Sintra, Oeiras, Alcochete, etc.). It also includes edge cases: Torres Vedras (outside the area) and exposed coastal capes (Cabo da Roca, Cabo Raso).
 - **Finding:** `observations.json` is nested by dynamic keys: hour timestamp (e.g. `2026-10-04T17:00`, no timezone suffix) → station ID → readings with Portuguese field names (`temperatura`, `humidade`, `precAcumulada`, `intensidadeVento`, ...). Each poll returns the full rolling ~24h window (24 hourly keys). Timestamps are UTC: at 17:11 UTC the newest key was `16:00`, i.e. data is published with ~1 hour lag.
 - **Decision:** Ingest all stations raw; in dbt, flatten twice (hour, then station), rename fields to English, convert `-99` sentinels to null, and deduplicate on (`station_id`, `observed_at`) since consecutive hourly polls overlap by ~23 hours. Parse hour keys as UTC and schedule the hourly poll at :30 past the hour to allow for the publishing lag. Map each bus stop to its nearest station by distance, with a flag to exclude unrepresentative stations.
+
+## 011 — Infrastructure as code with Terraform
+
+- **Context:** The raw-layer bucket is the first cloud resource; everything else (Lambda, IAM, schedules, Snowflake) will follow.
+- **Decision:** Manage all AWS infrastructure with Terraform in `infra/`, never by hand in the console. The AWS provider is pinned to `~> 6.0` and `.terraform.lock.hcl` is committed for reproducible runs. All resources carry `Project` and `ManagedBy = terraform` tags.
+- **Decision:** The raw bucket blocks all public access, encrypts at rest (SSE-S3), and has `force_destroy = false` so Terraform cannot delete it while it holds data. The bucket name includes the account ID, looked up at run time so it is never committed.
+- **Decision:** Authenticate with short-lived IAM Identity Center (SSO) credentials via the `transit` profile, not long-lived access keys.
+- **Trade-off:** Terraform state is local for now (gitignored, never committed). Acceptable for a single developer; state moves to an S3 backend before CI needs to run Terraform.
+
+## 012 — Account budget alarm
+
+- **Decision:** A `$5`/month AWS cost budget, managed in Terraform (`infra/budgets.tf`), emails on actual spend above 80% and on forecast spend above 100%. The forecast alert fires before money is spent.
+- **Note:** A budget alerts, it never blocks spending; billing data lags by hours. The alert email lives in `terraform.tfvars` (gitignored), keeping personal values out of the public repo.
+
+## 013 — Vehicles poller on Lambda, scheduled every minute
+
+- **Decision:** Run the unchanged `ingestion` package on AWS Lambda (`python3.12`, `arm64`, 60 s timeout), triggered by EventBridge Scheduler at `rate(1 minute)` with no flexible window.
+- **Decision:** Least privilege with one role per job. The Lambda role may only `s3:PutObject` under `raw/carris/vehicles/*` and write to its own log group. The scheduler role may only invoke this one function, restricted to this account via `aws:SourceAccount`.
+- **Decision:** Async retries are disabled in both the schedule and the Lambda. A late retry would fetch the current snapshot, not the missed one, so the next scheduled run is the retry.
+- **Decision:** Terraform owns the log group, with 14-day retention (Lambda's default keeps logs forever). The schedule has a `vehicles_schedule_enabled` kill switch to pause ingestion without deleting anything.
+- **Rollout:** Deployed with the schedule disabled, verified by a manual invoke and the logs, then enabled.
+
+## 014 — Lambda memory sized from measurement
+
+- **Finding:** At 128 MB, runs peaked at 99–100 MB used (~78%), most of it Python plus boto3. Cold start ~6.7 s; warm runs ~0.85–0.95 s.
+- **Decision:** Raise memory to 256 MB for headroom as payloads grow. Lambda CPU scales with memory; the extra cost is negligible at ~43k runs/month.
+
+## 015 — Vehicle payload size depends on the service day (corrects 009)
+
+- **Finding:** Exploration samples (Mon 5 Oct, a Portuguese public holiday; Sat 17 Oct afternoon) returned ~430 vehicles, ~330–350 KB. A regular weekday morning (Mon 26 Oct, 09:00 UTC) returned ~1,220–1,240 vehicles, ~1 MB. All 1,218 vehicles in one sample had a `trip_id`, so the extra records are buses in service, not idle ones.
+- **Interpretation:** The earlier samples were most likely reduced (holiday and weekend) service, so 009's volume estimate is roughly 3x low for weekday peaks.
+- **Decision:** Keep ingesting everything raw. Replace estimates with measured daily volumes once a week of data exists; storage remains well under $1/month either way.
