@@ -11,8 +11,8 @@ With the question in mind, all that was left was to start building. I split the 
 | Phase | What it covers | Status |
 |---|---|---|
 | 1 — Data & Tools Recon | Exploring the APIs, choosing the stack | ✅ Done |
-| 2 — Laying the Foundations | AWS infrastructure with Terraform | 🚧 In progress |
-| 3 — Catching the Data | Python pollers landing raw data in S3 | 🚧 In progress |
+| 2 — Laying the Foundations | AWS infrastructure with Terraform | ✅ Done |
+| 3 — Catching the Data | Python pollers landing raw data in S3 | 🚧 In progress — vehicles live since 26 Oct 2026 |
 | 4 — Into the Warehouse | Loading S3 into Snowflake | ⏳ Planned |
 | 5 — Making Sense of It | dbt models and data quality tests | ⏳ Planned |
 | 6 — The Verdict | Charts and answers | ⏳ Planned |
@@ -51,14 +51,26 @@ Every finding and design choice along the way is logged in [`docs/decisions.md`]
 
 This was my first time with AWS, so I wanted every piece of infrastructure written as code from day one: reproducible, reviewable, and easy to tear down. Everything lives in [`infra/`](infra/).
 
-**Built so far:**
+**Storage**
 - A **raw-layer S3 bucket**, named with the AWS account ID suffix so it's globally unique without hard-coding the ID in a public repo
 - **All public access blocked** and **encryption at rest** declared explicitly, even though the data itself is public. Least privilege applies to storage too.
+- `force_destroy = false`, so Terraform refuses to delete the bucket while it holds data. Weeks of collection can't vanish with one bad command.
+
+**Compute and scheduling**
+- An **AWS Lambda** function running the vehicles poller, triggered **every minute** by **EventBridge Scheduler**
+- A **kill switch** variable that pauses the schedule with one `terraform apply`, without deleting anything
+- A CloudWatch log group owned by Terraform with **14-day retention** (Lambda's default is to keep logs forever, which quietly costs money)
+
+**Security**
+- **One IAM role per job, each with the bare minimum.** The poller can only write files under its own S3 prefix and its own logs; it can't read, list or delete anything. The scheduler can only invoke that one function, and only from my account.
+- Authentication through an **AWS SSO profile**, so no long-lived keys sit on my laptop. In Lambda, the code picks up temporary credentials from its role, so there isn't a secret anywhere in the repo.
+
+**Guardrails**
+- A **$5/month budget alarm** that emails me on actual spend above 80% and, more usefully, on *forecast* spend above 100%, so I hear about a problem before the money is spent
 - **Default tags** on every resource, so it's always clear in the console (and on the bill) what belongs to this project
 - Region **`eu-west-1`**, matching Snowflake to avoid cross-region transfer costs
-- Authentication through an **AWS SSO profile**, so no long-lived keys sit on my laptop
 
-**Next up:** the Lambda functions that run the pollers, their IAM roles, and EventBridge schedules to trigger them.
+**Next up:** move Terraform state into S3 (it's local for now, fine for one person but not for CI), and alarms on Lambda errors and missing files.
 
 ---
 
@@ -77,20 +89,26 @@ The ingestion code lives in [`ingestion/`](ingestion/). The rule is simple: **la
 - The same code runs **locally** (writing to a `local_raw/` folder) or **in AWS** (writing to S3 when `RAW_BUCKET` is set), so I can test the whole job on my laptop without touching the cloud.
 - Unit tests pin down the partition logic, including the classic trap of a Lisbon time timestamp landing in the wrong UTC day.
 
-**Built so far:** the **live vehicles poller**, the heart of the project. Each snapshot holds ~450–500 buses; polling every minute adds up to around 700k rows and ~50 MB of gzipped files a day.
+**Live since 26 October 2026:** the **vehicles poller**, the heart of the project, running on Lambda every minute.
+
+- **Small and fast.** Python 3.12 on `arm64`, 256 MB of memory. Warm runs take under a second; most of that is waiting for the API.
+- **No retries, on purpose.** If a run fails, retrying it later would only fetch a *newer* snapshot, never the missed one. So the next minute's run is the retry.
+- **Rolled out carefully.** Deployed with the schedule switched off, tested with a manual invoke and the logs, and only then switched on.
+
+**Measuring beat estimating, twice.** The first run's logs showed memory peaking at 78% of 128 MB, so I doubled it. And a weekday morning returned **~1,200 buses (~1 MB per snapshot)**, three times what I'd seen while exploring. The reason? My exploration samples were taken on a public holiday and a Saturday afternoon, both reduced-service days. Lesson learned: a sample from an unusual day skews every estimate built on it. Real daily volumes will come from a full week of collected data.
 
 **The collection plan:**
 
-| Data | Cadence | Why |
-|---|---|---|
-| Vehicle positions | Every minute | Arrivals are derived from these, so resolution matters |
-| Service delays | Every 15 min | Small, live endpoint |
-| Alerts | Every 30 min | Service disruptions |
-| IPMA weather observations | Hourly, at :30 | No archive, and IPMA publishes with ~1 hour lag |
-| Stops, lines, routes | Daily | Slowly changing dimensions |
-| Service metrics | Daily | Rolling 14 day window |
-| Demand by line | Weekly | Returns full history on every call (~48 MB) |
-| GTFS schedule | Landed as a zip | `stop_times.txt` alone is ~787 MB unzipped, too big to unpack inside Lambda |
+| Data | Cadence | Why | Status |
+|---|---|---|---|
+| Vehicle positions | Every minute | Arrivals are derived from these, so resolution matters | ✅ Live |
+| IPMA weather observations | Hourly, at :30 | No archive, and IPMA publishes with ~1 hour lag | ⏳ Next |
+| Service delays | Every 15 min | Small, live endpoint | ⏳ Planned |
+| Alerts | Every 30 min | Service disruptions | ⏳ Planned |
+| Stops, lines, routes | Daily | Slowly changing dimensions | ⏳ Planned |
+| Service metrics | Daily | Rolling 14 day window | ⏳ Planned |
+| Demand by line | Weekly | Returns full history on every call (~48 MB) | ⏳ Planned |
+| GTFS schedule | Landed as a zip | `stop_times.txt` alone is ~787 MB unzipped, too big to unpack inside Lambda | ⏳ Planned |
 
 ---
 
@@ -131,17 +149,32 @@ The ingestion code lives in [`ingestion/`](ingestion/). The rule is simple: **la
 
 ```mermaid
 flowchart LR
-    A[Carris Metropolitana API] --> C[Python pollers<br/>AWS Lambda + EventBridge]
+    S[EventBridge Scheduler<br/>every minute] --> C[Python pollers<br/>AWS Lambda]
+    A[Carris Metropolitana API] --> C
     B[IPMA API] --> C
     C --> D[(S3 raw layer<br/>gzipped JSON)]
+    C -.-> L[CloudWatch Logs]
     D --> E[(Snowflake)]
     E --> F[dbt models + tests]
     F --> G[Charts]
 ```
 
+## What it costs
+
+Running the vehicles poller every minute (~43,000 runs a month) costs **well under $1 a month**, even before any free tier:
+
+| Item | Rough monthly cost |
+|---|---|
+| S3 write requests (one file per minute) | ~$0.20 |
+| Lambda compute (256 MB, ~1 s per run) | ~$0.15 |
+| EventBridge Scheduler invocations | ~$0.05 |
+| S3 storage | cents, growing by roughly 3–4 GB a month |
+
+The $5 budget alarm is there in case any of that assumption turns out wrong.
+
 ## Running it yourself
 
-**Prerequisites:** Python 3.12+, [uv](https://docs.astral.sh/uv/), Terraform ≥ 1.6, and an AWS account with an SSO profile.
+**Prerequisites:** Python 3.12+, [uv](https://docs.astral.sh/uv/), Terraform ≥ 1.6, and an AWS account with an SSO profile that has a default region set (`aws configure set region eu-west-1 --profile <your-profile>`).
 
 ```bash
 # Install dependencies
@@ -153,11 +186,25 @@ uv run pytest
 # Run the vehicles poller locally (writes to ./local_raw)
 PYTHONPATH=ingestion/src uv run python -m ingestion.carris_vehicles
 
+# Log in to AWS
+aws sso login --profile <your-profile>
+export AWS_PROFILE=<your-profile>
+
+# Budget alerts need an email; keep it out of git (*.tfvars is gitignored)
+echo 'alert_email = "you@example.com"' > infra/terraform.tfvars
+
 # Deploy the infrastructure
-cd infra
-terraform init
-terraform apply
+terraform -chdir=infra init
+terraform -chdir=infra apply
 
 # Send poller output to S3 instead of the local folder
-export RAW_BUCKET=$(terraform output -raw raw_bucket_name)
+export RAW_BUCKET=$(terraform -chdir=infra output -raw raw_bucket_name)
+PYTHONPATH=ingestion/src uv run python -m ingestion.carris_vehicles
+
+# Test the deployed Lambda once, then read its logs
+aws lambda invoke --function-name "$(terraform -chdir=infra output -raw vehicles_function_name)" /tmp/out.json
+aws logs tail "$(terraform -chdir=infra output -raw vehicles_log_group)" --since 10m
+
+# Pause the every-minute schedule without deleting anything (kill switch)
+terraform -chdir=infra apply -var vehicles_schedule_enabled=false
 ```
