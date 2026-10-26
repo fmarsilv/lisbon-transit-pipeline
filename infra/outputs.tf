@@ -9,3 +9,13 @@ output "raw_bucket_arn" {
   description = "ARN (AWS's unique resource identifier) of the raw bucket. Used later in IAM policies."
   value       = aws_s3_bucket.raw.arn
 }
+
+output "vehicles_function_name" {
+  description = "Name of the vehicles Lambda function."
+  value       = aws_lambda_function.vehicles.function_name
+}
+
+output "vehicles_log_group" {
+  description = "CloudWatch log group of the vehicles Lambda."
+  value       = aws_cloudwatch_log_group.vehicles.name
+}

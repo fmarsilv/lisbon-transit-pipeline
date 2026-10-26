@@ -28,3 +28,9 @@ variable "monthly_budget_usd" {
   type        = string
   default     = "5"
 }
+
+variable "vehicles_schedule_enabled" {
+  description = "Kill switch for the every-minute vehicles schedule."
+  type        = bool
+  default     = true
+}
