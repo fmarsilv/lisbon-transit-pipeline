@@ -93,3 +93,14 @@ A running log of findings and choices made while building this pipeline.
 - **Finding, performance at 256 MB:** Average ~0.48 s, p99 ~2.0–2.3 s, worst ~4 s on a warm day (8.9 s on deploy day, including cold starts), against a 60 s timeout. Peak memory was 102 MB (~40%), almost all of it the Python runtime and boto3, so memory barely depends on payload size.
 - **Finding, cost:** Average duration roughly halved compared with 128 MB (~0.9 s), consistent with Lambda giving more CPU at more memory, so compute cost (GB-seconds) stayed about the same while headroom doubled.
 - **Decision:** Keep 256 MB and the 60 s timeout. Re-run the audit after the first weekend to measure reduced-service volumes.
+
+## 017 — Observability: health check, audit and alarms
+
+- **Context:** The pipeline runs unattended, so failures must be visible without anyone looking. IPMA weather will be unrecoverable after 24 hours once it's added, which makes early detection essential.
+- **Decision:** Two operational scripts in `scripts/`, kept outside `ingestion/src` so they are never deployed. `healthcheck.py` is a point-in-time check (schedule, deployed config, freshness, last-hour completeness, 24 h errors, spend) that exits 0/1 so CI or cron can use it later. `audit_vehicles.py` is a historical check (per-day completeness, gaps over 90 s, extra runs, measured volumes); its counting logic is a pure function, testable without AWS. Both read resource names from `terraform output -json`, so nothing is hard-coded.
+- **Decision:** Two CloudWatch alarms on Lambda metrics, alerting by email through an SNS topic, with both ALARM and recovery (OK) notifications:
+  - **Errors:** more than 5 failures in 15 minutes (a third of runs). Isolated failures from the external API are tolerated, to avoid alert fatigue. Timeouts count as errors.
+  - **Heartbeat:** fewer than 10 invocations in 15 minutes (15 expected), with `treat_missing_data = breaching`, because a stopped function emits no datapoints at all. Its actions follow the `vehicles_schedule_enabled` kill switch, so a deliberate pause doesn't page.
+- **Verification:** The alert chain was tested end to end by forcing the heartbeat into ALARM with `set-alarm-state` and confirming the alert email and the return to OK.
+- **Known limits:** Neither alarm detects a successful run that stores bad content (e.g. an empty vehicle list); that belongs in dbt data tests. If the heartbeat ever fires falsely on the still-filling newest 15-minute window, switch it to 5-minute periods requiring 3 consecutive low windows.
+- **Cost:** about $0.10 per alarm per month; SNS email delivery at this volume is negligible.

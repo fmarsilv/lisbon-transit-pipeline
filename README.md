@@ -67,10 +67,11 @@ This was my first time with AWS, so I wanted every piece of infrastructure writt
 
 **Guardrails**
 - A **$5/month budget alarm** that emails me on actual spend above 80% and, more usefully, on *forecast* spend above 100%, so I hear about a problem before the money is spent
+- **Two CloudWatch alarms** that email me through SNS: one when the poller fails repeatedly, and a **heartbeat** for when it stops running at all (more on these below)
 - **Default tags** on every resource, so it's always clear in the console (and on the bill) what belongs to this project
 - Region **`eu-west-1`**, matching Snowflake to avoid cross-region transfer costs
 
-**Next up:** move Terraform state into S3 (it's local for now, fine for one person but not for CI), and alarms on Lambda errors and missing files.
+**Next up:** move Terraform state into S3. It's local for now, which is fine for one person but not for CI.
 
 ---
 
@@ -95,7 +96,26 @@ The ingestion code lives in [`ingestion/`](ingestion/). The rule is simple: **la
 - **No retries, on purpose.** If a run fails, retrying it later would only fetch a *newer* snapshot, never the missed one. So the next minute's run is the retry.
 - **Rolled out carefully.** Deployed with the schedule switched off, tested with a manual invoke and the logs, and only then switched on.
 
-**Measuring beat estimating, twice.** The first run's logs showed memory peaking at 78% of 128 MB, so I doubled it. And a weekday morning returned **~1,200 buses (~1 MB per snapshot)**, three times what I'd seen while exploring. The reason? My exploration samples were taken on a public holiday and a Saturday afternoon, both reduced-service days. Lesson learned: a sample from an unusual day skews every estimate built on it. Real daily volumes will come from a full week of collected data.
+**Measuring beat estimating, three times.**
+1. The first run's logs showed memory peaking at 78% of 128 MB, so I doubled it. Runs then got twice as fast, because Lambda gives more CPU with more memory, so the compute cost stayed about the same.
+2. A weekday morning returned **~1,200 buses (~1 MB per snapshot)**, three times what I'd seen while exploring. My exploration samples had been taken on a public holiday and a Saturday afternoon, both reduced-service days.
+3. So I estimated daily volume from that rush-hour snapshot, and was wrong again, this time too high. At 3 a.m. there are only a handful of buses. The first full day measured **79 MB gzipped (~2.4 GB a month)**, about half my estimate.
+
+Lesson learned: a sample from an unusual day, or an unusual hour, skews every estimate built on it. Measure whole cycles.
+
+### Keeping an eye on it 🔭
+
+A pipeline that runs unattended needs to tell me when it breaks, not wait for me to notice. Three layers:
+
+| Layer | Question it answers | How |
+|---|---|---|
+| [`scripts/healthcheck.py`](scripts/healthcheck.py) | Is it working *right now*? | Six checks: schedule, deployed config, freshness, last-hour completeness, errors, spend. Exits 0 or 1, so it can run in CI later |
+| [`scripts/audit_vehicles.py`](scripts/audit_vehicles.py) | How reliable *has* it been? | Per-day completeness, every gap over 90 s, extra runs, measured volumes |
+| CloudWatch alarms → email | Tell me the moment it breaks | **Errors:** more than 5 failed runs in 15 minutes. **Heartbeat:** fewer than 10 runs in 15 minutes |
+
+The heartbeat is the subtle one. If the schedule breaks, nothing runs, so nothing *fails*, and an errors alarm stays perfectly quiet. So the heartbeat watches for the **absence** of runs, and treats missing data as bad.
+
+**First audit (26–28 Oct):** **100% of expected runs collected, zero gaps.** Average run ~0.5 s, 99th percentile ~2 s against a 60 s timeout, peak memory ~40% of 256 MB.
 
 **The collection plan:**
 
@@ -153,7 +173,8 @@ flowchart LR
     A[Carris Metropolitana API] --> C
     B[IPMA API] --> C
     C --> D[(S3 raw layer<br/>gzipped JSON)]
-    C -.-> L[CloudWatch Logs]
+    C -.-> L[CloudWatch Logs<br/>+ metrics]
+    L -.-> AL[Alarms → email]
     D --> E[(Snowflake)]
     E --> F[dbt models + tests]
     F --> G[Charts]
@@ -166,11 +187,12 @@ Running the vehicles poller every minute (~43,000 runs a month) costs **well und
 | Item | Rough monthly cost |
 |---|---|
 | S3 write requests (one file per minute) | ~$0.20 |
-| Lambda compute (256 MB, ~1 s per run) | ~$0.15 |
+| CloudWatch alarms (2) | ~$0.20 |
+| Lambda compute (256 MB, ~0.5 s per run) | ~$0.07 |
 | EventBridge Scheduler invocations | ~$0.05 |
-| S3 storage | cents, growing by roughly 3–4 GB a month |
+| S3 storage | cents, growing by ~2.4 GB a month (measured) |
 
-The $5 budget alarm is there in case any of that assumption turns out wrong.
+The $5 budget alarm is there in case any of that turns out wrong. Actual spend after the first three days: about one cent.
 
 ## Running it yourself
 
@@ -204,6 +226,12 @@ PYTHONPATH=ingestion/src uv run python -m ingestion.carris_vehicles
 # Test the deployed Lambda once, then read its logs
 aws lambda invoke --function-name "$(terraform -chdir=infra output -raw vehicles_function_name)" /tmp/out.json
 aws logs tail "$(terraform -chdir=infra output -raw vehicles_log_group)" --since 10m
+
+# Is everything healthy right now? (exit code 0 = all checks pass)
+uv run python scripts/healthcheck.py
+
+# How complete is the collected data, and how big is it?
+uv run python scripts/audit_vehicles.py --since 2026-10-26T09:00
 
 # Pause the every-minute schedule without deleting anything (kill switch)
 terraform -chdir=infra apply -var vehicles_schedule_enabled=false
