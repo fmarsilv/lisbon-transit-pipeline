@@ -19,3 +19,8 @@ output "vehicles_log_group" {
   description = "CloudWatch log group of the vehicles Lambda."
   value       = aws_cloudwatch_log_group.vehicles.name
 }
+
+output "vehicles_schedule_name" {
+  description = "Name of the every-minute EventBridge schedule."
+  value       = aws_scheduler_schedule.vehicles.name
+}
